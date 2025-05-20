@@ -1,5 +1,5 @@
 #include "TWAI_ISO.h"
-#include <string.h> // For memcpy, memset
+#include <string.h>
 
 #define PCI_TYPE_SINGLE_FRAME       0x00
 #define PCI_TYPE_FIRST_FRAME        0x01
@@ -25,7 +25,7 @@ static bool _isoTp_platform_send_can_frame(uint32_t id, const uint8_t* data, uin
     for (uint8_t i = dlc; i < 8; ++i) {
         message.data[i] = padding_byte;
     }
-    // Serial.printf("ISO-TP CAN TX: ID=0x%03lX, Data: %02X %02X ...\n", id, message.data[0], message.data[1]);
+    
     if (twai_transmit(&message, pdMS_TO_TICKS(50)) == ESP_OK) {
         return true;
     }
@@ -120,7 +120,7 @@ bool isoTp_send(IsoTpLink_t* link,
 
     uint8_t can_data_buffer[8];
 
-    if (length <= 7) { // Single Frame
+    if (length <= 7) {
         can_data_buffer[0] = (PCI_TYPE_SINGLE_FRAME << 4) | (length & 0x0F);
         memcpy(&can_data_buffer[1], payload, length);
         if (!_isoTp_platform_send_can_frame(link->local_tx_can_id, can_data_buffer, length + 1, link->padding_byte)) {
@@ -129,7 +129,7 @@ bool isoTp_send(IsoTpLink_t* link,
         link->state = ISOTP_IDLE;
         Serial.printf("ISO-TP INFO: SF sent (len %u) to ID 0x%03lX\n", length, link->local_tx_can_id);
         return true;
-    } else { // First Frame
+    } else {
         can_data_buffer[0] = (PCI_TYPE_FIRST_FRAME << 4) | ((length >> 8) & 0x0F);
         can_data_buffer[1] = length & 0xFF;
         uint8_t ff_data_len = (8 - 2);
@@ -153,7 +153,7 @@ void isoTp_poll(IsoTpLink_t* link) {
 
     if (link->state == ISOTP_SEND_SENDING_CF) {
         if (link->send_offset < link->send_total_length && link->flow_control_cf_to_send_in_block > 0) {
-            if (current_time_ms - link->last_action_timestamp_ms >= link->fc_st_min_ms_received) { // Use received STmin
+            if (current_time_ms - link->last_action_timestamp_ms >= link->fc_st_min_ms_received) {
                 uint8_t can_data_buffer[8];
                 can_data_buffer[0] = (PCI_TYPE_CONSECUTIVE_FRAME << 4) | (link->send_sequence_number & 0x0F);
                 uint16_t remaining_payload = link->send_total_length - link->send_offset;
@@ -219,9 +219,9 @@ bool isoTp_receive(IsoTpLink_t* link, const twai_message_t* can_msg,
         link->is_session_active = true;
         link->remote_rx_can_id = can_msg->identifier;
         if (can_msg->identifier >= 0x7E8 && can_msg->identifier <= 0x7EF) {
-            link->local_tx_can_id = can_msg->identifier - 0x08; // Where we send FC
+            link->local_tx_can_id = can_msg->identifier - 0x08;
         } else {
-            link->local_tx_can_id = 0; // Cannot determine FC target
+            link->local_tx_can_id = 0;
         }
         Serial.printf("ISO-TP INFO: New incoming session from ID 0x%03lX. FC will target 0x%03lX\n", link->remote_rx_can_id, link->local_tx_can_id);
     }
@@ -250,8 +250,8 @@ bool isoTp_receive(IsoTpLink_t* link, const twai_message_t* can_msg,
         }
         case PCI_TYPE_FIRST_FRAME: {
             if (link->state != ISOTP_IDLE && link->state != ISOTP_RECV_WAIT_CF) {
-                 Serial.printf("ISO-TP WARN: FF received but link not idle (state %d)\n", link->state);
-                 return false;
+                Serial.printf("ISO-TP WARN: FF received but link not idle (state %d)\n", link->state);
+                return false;
             }
             link->receive_total_expected_length = ((uint16_t)(pci_data[0] & 0x0F) << 8) | pci_data[1];
             if (link->receive_total_expected_length == 0 || link->receive_total_expected_length > ISO_TP_MAX_MESSAGE_SIZE ||
@@ -268,6 +268,12 @@ bool isoTp_receive(IsoTpLink_t* link, const twai_message_t* can_msg,
             link->receive_offset = ff_payload_in_frame;
             link->receive_sequence_number_expected = 1;
             link->state = ISOTP_RECV_WAIT_CF;
+            
+            if (link->receive_total_expected_length >= 17 && link->receive_total_expected_length <= 21) {
+                Serial.printf("ISO-TP INFO: Possible VIN data detected (length %u), waiting for %u more bytes\n", 
+                          link->receive_total_expected_length, 
+                          link->receive_total_expected_length - link->receive_offset);
+            }
 
             if (link->local_tx_can_id == 0) {
                 Serial.println("ISO-TP ERR: Cannot send FC, local_tx_can_id (FC target) is not set.");
@@ -275,8 +281,8 @@ bool isoTp_receive(IsoTpLink_t* link, const twai_message_t* can_msg,
             }
             uint8_t fc_can_data[3];
             fc_can_data[0] = (PCI_TYPE_FLOW_CONTROL << 4) | FC_STATUS_CONTINUE_TO_SEND;
-            fc_can_data[1] = link->fc_block_size_to_send;    // Use our configured BS
-            fc_can_data[2] = link->fc_st_min_to_send_ms;    // Use our configured STmin
+            fc_can_data[1] = link->fc_block_size_to_send;
+            fc_can_data[2] = link->fc_st_min_to_send_ms;
             if (!_isoTp_platform_send_can_frame(link->local_tx_can_id, fc_can_data, 3, link->padding_byte)) {
                 Serial.println("ISO-TP ERR: Failed to send FC. Resetting link.");
                 _isoTp_reset_link_internal(link, false); return false;
@@ -306,10 +312,29 @@ bool isoTp_receive(IsoTpLink_t* link, const twai_message_t* can_msg,
             memcpy(link->receive_buffer_ptr + link->receive_offset, &pci_data[1], cf_payload_in_frame);
             link->receive_offset += cf_payload_in_frame;
             link->receive_sequence_number_expected++;
+            
             if (link->receive_offset >= link->receive_total_expected_length) {
                 *out_message_length = link->receive_total_expected_length;
                 *out_message_buffer = link->receive_buffer_ptr;
-                Serial.printf("ISO-TP INFO: All CFs received. Message complete (len %u) from ID 0x%03lX.\n", *out_message_length, can_msg->identifier);
+                
+                if (*out_message_length >= 17 && *out_message_length <= 21) {
+                    Serial.printf("ISO-TP INFO: Possible VIN data received (len %u). Validating...\n", *out_message_length);
+                    bool valid_ascii = true;
+                    for (uint16_t i = 0; i < *out_message_length; i++) {
+                        if (link->receive_buffer_ptr[i] != 0 && !isprint(link->receive_buffer_ptr[i])) {
+                            valid_ascii = false;
+                            break;
+                        }
+                    }
+                    if (!valid_ascii) {
+                        Serial.println("ISO-TP WARN: Received data has non-printable chars, may not be valid VIN");
+                    } else {
+                        Serial.println("ISO-TP INFO: Valid printable VIN data received");
+                    }
+                }
+                
+                Serial.printf("ISO-TP INFO: All CFs received. Message complete (len %u) from ID 0x%03lX.\n", 
+                             *out_message_length, can_msg->identifier);
                 link->state = ISOTP_IDLE;
                 return true;
             }
@@ -322,19 +347,19 @@ bool isoTp_receive(IsoTpLink_t* link, const twai_message_t* can_msg,
             }
             uint8_t fc_status = pci_data[0] & 0x0F;
             if (fc_status == FC_STATUS_CONTINUE_TO_SEND) {
-                link->fc_block_size_received = pci_data[1]; // Store what they want (BS)
-                uint8_t st_min_raw = pci_data[2];           // Store what they want (STmin)
+                link->fc_block_size_received = pci_data[1];
+                uint8_t st_min_raw = pci_data[2];
                 if (st_min_raw <= 0x7F) {
                     link->fc_st_min_ms_received = st_min_raw;
                 } else if (st_min_raw >= 0xF1 && st_min_raw <= 0xF9) {
-                    link->fc_st_min_ms_received = 1; // Simplified µs handling
+                    link->fc_st_min_ms_received = 1;
                 } else {
-                    link->fc_st_min_ms_received = 127; // Invalid STmin
+                    link->fc_st_min_ms_received = 127;
                     Serial.printf("ISO-TP WARN: FC - Invalid STmin value 0x%02X from remote, using 127ms\n", st_min_raw);
                 }
                 link->flow_control_cf_to_send_in_block = (link->fc_block_size_received == 0) ? 0xFF : link->fc_block_size_received;
                 link->state = ISOTP_SEND_SENDING_CF;
-                link->last_action_timestamp_ms = millis(); // Reset timer for STmin logic
+                link->last_action_timestamp_ms = millis();
                 Serial.printf("ISO-TP INFO: FC (CTS) received from ID 0x%03lX. Remote BS=%u, Remote STmin=%ums. Sending CFs.\n",
                         can_msg->identifier, link->fc_block_size_received, link->fc_st_min_ms_received);
             } else if (fc_status == FC_STATUS_WAIT) {
